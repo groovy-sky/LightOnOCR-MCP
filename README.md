@@ -101,22 +101,24 @@ environment only from `main` and version tags. Pull-request CI has only
 `publish` job that authenticates to GHCR with its workflow `GITHUB_TOKEN`.
 
 No model conversion, Docker build, registry login, or inference run is required
-on the operator's machine. Authenticate GitHub CLI, create a signed semantic
-version tag, and push it; the tag push starts the protected workflow exactly
-once:
+on the operator's machine. Every push to `main` automatically starts the
+protected workflow and publishes the tested image as
+`ghcr.io/<owner>/lightonocr-mcp:sha-<git-sha>` after any configured environment
+approval.
+
+A signed semantic version tag additionally publishes the version tag and, for
+a stable release, `latest`:
+
+```bash
+git tag -s v1.0.0 -m 'LightOnOCR MCP v1.0.0'
+git push origin v1.0.0
+```
+
+The workflow can also be rerun explicitly from `main` without performing any
+local build or registry operation:
 
 ```bash
 gh auth login --hostname github.com
-git tag -s v1.0.0 -m 'LightOnOCR MCP v1.0.0'
-git push origin v1.0.0
-gh run list --workflow release.yml --limit 5
-gh run watch <run-id> --exit-status
-```
-
-For an explicitly approved non-versioned build from `main`, dispatch the same
-workflow manually. This publishes only the immutable `sha-<git-sha>` reference:
-
-```bash
 gh workflow run release.yml --ref main
 gh run list --workflow release.yml --limit 5
 gh run watch <run-id> --exit-status

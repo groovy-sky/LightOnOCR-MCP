@@ -31,8 +31,9 @@ model files.
 
 1. Trigger CI for pull requests without package-write permissions or image
    publication.
-2. Trigger the protected release workflow from a signed version tag or an
-   explicitly approved `workflow_dispatch` event.
+2. Trigger the protected release workflow automatically from `main`, from a
+   signed version tag, or from an explicitly approved `workflow_dispatch`
+   event. Main-branch releases publish only an immutable commit-SHA tag.
 3. Download `lightonai/LightOnOCR-2-1B` at a pinned, immutable Hugging Face
    commit SHA. Never convert from a mutable branch such as `main`.
 4. Verify the downloaded snapshot against a generated SHA-256 manifest.
@@ -220,8 +221,9 @@ before reporting readiness.
 ## Workflow Publication and Deployment
 
 Production images must be built and published only by
-`.github/workflows/release.yml`. A release operator selects a version tag or
-starts an approved manual workflow; the workflow validates, builds, scans,
+`.github/workflows/release.yml`. A push to `main` starts an immutable SHA
+release automatically; a release operator can instead select a version tag or
+start an approved manual workflow. The workflow validates, builds, scans,
 attests, and pushes the image to GHCR. Direct local publication is unsupported.
 
 ```bash
