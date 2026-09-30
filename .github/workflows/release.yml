@@ -1,0 +1,212 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  packages: write
+  id-token: write
+  attestations: write
+  deployments: write
+
+env:
+  MODEL_REPOSITORY: lightonai/LightOnOCR-2-1B
+  MODEL_REVISION: c97bd377f04481830395218fa8951df9deaba756
+  LLAMA_CPP_REVISION: 6a2743f028f78bfb88a7189607b49bde30df3769
+  TEXT_GGUF_TYPE: Q8_0
+  REGISTRY: ghcr.io
+
+jobs:
+  build-artifacts:
+    runs-on: ubuntu-24.04
+    environment: release
+    timeout-minutes: 360
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Verify signed release tag
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$GITHUB_REF_NAME" --jq '.object.sha')
+          gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_sha" --jq '.verification.verified' | grep -Fx true
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+          cache: pip
+      - name: Validate source
+        run: |
+          test -z "$(gofmt -l main.go main_test.go cmd/mcp-smoke/main.go)"
+          go test -race ./...
+          go vet ./...
+          go build ./...
+      - name: Install conversion and reference dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends cmake g++ fonts-dejavu-core
+          python -m pip install huggingface-hub==1.0.1 pillow==12.0.0 torch==2.9.0 transformers==5.0.0
+      - name: Convert pinned official model
+        env:
+          WORK_DIR: ${{ runner.temp }}/conversion
+          ARTIFACT_DIR: ${{ github.workspace }}/artifacts
+        run: scripts/convert-model.sh
+      - name: Generate parity fixtures and Transformers references
+        run: |
+          scripts/generate-fixtures.py
+          scripts/run-transformers-reference.py \
+            --model "${{ runner.temp }}/conversion/model" \
+            --fixtures testdata/parity --output "${{ runner.temp }}/transformers.json"
+      - name: Validate F16 parity
+        run: |
+          "${{ runner.temp }}/conversion/llama.cpp/build/bin/llama-server" \
+            --model artifacts/LightOnOCR-2-1B-F16.gguf \
+            --mmproj artifacts/LightOnOCR-2-1B-mmproj-F16.gguf \
+            --host 127.0.0.1 --port 8000 --no-mmproj-offload >"${{ runner.temp }}/llama-f16.log" 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          timeout 900 sh -c 'until curl --fail --silent http://127.0.0.1:8000/health >/dev/null; do sleep 2; done'
+          scripts/run-llama-reference.py --fixtures testdata/parity --output "${{ runner.temp }}/llama-f16.json"
+          scripts/validate-parity.py "${{ runner.temp }}/transformers.json" "${{ runner.temp }}/llama-f16.json" \
+            --max-cer 0.01 --output "${{ runner.temp }}/f16-parity.json"
+          kill "$server_pid"
+          wait "$server_pid" || true
+          trap - EXIT
+      - name: Validate Q8_0 parity
+        run: |
+          "${{ runner.temp }}/conversion/llama.cpp/build/bin/llama-server" \
+            --model artifacts/LightOnOCR-2-1B-Q8_0.gguf \
+            --mmproj artifacts/LightOnOCR-2-1B-mmproj-F16.gguf \
+            --host 127.0.0.1 --port 8000 --no-mmproj-offload >"${{ runner.temp }}/llama-q8.log" 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid" 2>/dev/null || true' EXIT
+          timeout 900 sh -c 'until curl --fail --silent http://127.0.0.1:8000/health >/dev/null; do sleep 2; done'
+          scripts/run-llama-reference.py --fixtures testdata/parity --output "${{ runner.temp }}/llama-q8.json"
+          scripts/validate-parity.py "${{ runner.temp }}/transformers.json" "${{ runner.temp }}/llama-q8.json" \
+            --max-cer 0.03 --output "${{ runner.temp }}/q8-parity.json"
+          F16_PARITY_RESULT="${{ runner.temp }}/f16-parity.json" \
+            Q8_PARITY_RESULT="${{ runner.temp }}/q8-parity.json" \
+            scripts/generate-manifest.sh artifacts
+          kill "$server_pid"
+          wait "$server_pid" || true
+          trap - EXIT
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: verified-model-artifacts
+          path: |
+            artifacts/*.gguf
+            artifacts/*.json
+            artifacts/*.sha256
+          retention-days: 1
+          if-no-files-found: error
+
+  publish:
+    needs: build-artifacts
+    runs-on: ubuntu-24.04
+    environment: release
+    timeout-minutes: 180
+    outputs:
+      digest: ${{ steps.push.outputs.digest }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          name: verified-model-artifacts
+          path: artifacts
+      - name: Verify artifact hashes
+        run: (cd artifacts && sha256sum --check --strict manifest.sha256)
+      - name: Build production image
+        env:
+          IMAGE: ghcr.io/${{ github.repository_owner }}/lightonocr-mcp:sha-${{ github.sha }}
+        run: |
+          docker build --pull \
+            --build-arg MODEL_REVISION="$MODEL_REVISION" \
+            --build-arg LLAMA_CPP_REVISION="$LLAMA_CPP_REVISION" \
+            --build-arg VERSION="${GITHUB_REF_NAME}" --tag "$IMAGE" .
+          echo "IMAGE=$IMAGE" >> "$GITHUB_ENV"
+      - name: Inspect runtime contents and configuration
+        run: |
+          test "$(docker image inspect "$IMAGE" --format '{{.Config.User}}')" = "10001:10001"
+          test "$(docker image inspect "$IMAGE" --format '{{json .Config.ExposedPorts}}')" = '{"8080/tcp":{}}'
+          test "$(docker image inspect "$IMAGE" --format '{{index .Config.Labels "ai.lightonocr.model.revision"}}')" = "$MODEL_REVISION"
+          test "$(docker image inspect "$IMAGE" --format '{{index .Config.Labels "ai.lightonocr.llama-cpp.revision"}}')" = "$LLAMA_CPP_REVISION"
+          docker run --rm --entrypoint /bin/sh "$IMAGE" -c \
+            'test ! -e /usr/bin/python3 && test ! -e /usr/bin/gcc && test ! -e /usr/bin/git &&
+             test -s /models/manifest.json && test -s /licenses/model-Apache-2.0 && test -s /licenses/llama.cpp-LICENSE &&
+             test -z "$(find / -type f \( -name "*.safetensors" -o -name "*.py" \) -print -quit 2>/dev/null)"'
+      - uses: aquasecurity/trivy-action@b6643a29fecd7f34b3597bc6acb0a98b03d33ff8 # v0.33.1
+        with:
+          image-ref: ${{ env.IMAGE }}
+          format: table
+          exit-code: '1'
+          ignore-unfixed: true
+          severity: CRITICAL,HIGH
+      - uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          image: ${{ env.IMAGE }}
+          format: spdx-json
+          output-file: sbom.spdx.json
+      - name: CPU health and MCP smoke test
+        env:
+          SMOKE_IMAGE_URL: https://huggingface.co/lightonai/LightOnOCR-2-1B/resolve/c97bd377f04481830395218fa8951df9deaba756/benchmark.png
+        run: |
+          curl --fail --location --silent --show-error --max-filesize 20971520 \
+            --output "${{ runner.temp }}/smoke.png" "$SMOKE_IMAGE_URL"
+          docker run --detach --name lightonocr-smoke --publish 127.0.0.1:8080:8080 "$IMAGE"
+          trap 'docker rm --force lightonocr-smoke >/dev/null 2>&1 || true' EXIT
+          timeout 1200 sh -c 'until curl --fail --silent http://127.0.0.1:8080/healthz >/dev/null; do sleep 3; done'
+          go run ./cmd/mcp-smoke http://127.0.0.1:8080/mcp \
+            "${{ runner.temp }}/smoke.png" "$SMOKE_IMAGE_URL"
+          docker stop --time 30 lightonocr-smoke
+          test "$(docker inspect lightonocr-smoke --format '{{.State.ExitCode}}')" = 0
+          docker rm lightonocr-smoke
+          trap - EXIT
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish immutable and approved release tags
+        id: push
+        run: |
+          docker push "$IMAGE"
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version_image="ghcr.io/${GITHUB_REPOSITORY_OWNER}/lightonocr-mcp:${GITHUB_REF_NAME}"
+            docker tag "$IMAGE" "$version_image"
+            docker push "$version_image"
+            if [[ "$GITHUB_REF_NAME" != *-* ]]; then
+              latest_image="ghcr.io/${GITHUB_REPOSITORY_OWNER}/lightonocr-mcp:latest"
+              docker tag "$IMAGE" "$latest_image"
+              docker push "$latest_image"
+            fi
+          fi
+          digest=$(docker image inspect "$IMAGE" --format '{{index .RepoDigests 0}}' | cut -d@ -f2)
+          test "${digest#sha256:}" != "$digest"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      - uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3
+        with:
+          subject-name: ghcr.io/${{ github.repository_owner }}/lightonocr-mcp
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-sbom
+          path: sbom.spdx.json
+
+  deploy-staging:
+    needs: publish
+    uses: ./.github/workflows/deploy.yml
+    with:
+      environment: staging
+      image_digest: ${{ needs.publish.outputs.digest }}
+    secrets: inherit

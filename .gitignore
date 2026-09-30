@@ -1,0 +1,7 @@
+/artifacts/*.gguf
+/artifacts/*.sha256
+/artifacts/source-manifest.sha256
+/lightonocr-mcp
+/.cache/
+__pycache__/
+*.pyc

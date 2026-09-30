@@ -1,0 +1,31 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: true
+      - run: test -z "$(gofmt -l main.go main_test.go cmd/mcp-smoke/main.go)"
+      - run: go test -race ./...
+      - run: go vet ./...
+      - run: go build ./...
+      - name: Validate scripts
+        run: |
+          sh -n entrypoint.sh scripts/convert-model.sh scripts/generate-manifest.sh
+          python3 -m py_compile scripts/*.py
+      - name: Build non-publishing container stages
+        run: |
+          docker build --target go-builder .
+          docker build --target llama-builder --build-arg LLAMA_CPP_REVISION=6a2743f028f78bfb88a7189607b49bde30df3769 .

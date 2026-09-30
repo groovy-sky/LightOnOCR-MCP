@@ -1,0 +1,7 @@
+.git
+.github/agents
+.vscode
+.cache
+lightonocr-mcp
+**/__pycache__
+**/*.pyc

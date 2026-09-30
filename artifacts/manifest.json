@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "model_repository": "lightonai/LightOnOCR-2-1B",
+  "model_revision": "c97bd377f04481830395218fa8951df9deaba756",
+  "model_license": "Apache-2.0",
+  "llama_cpp_revision": "6a2743f028f78bfb88a7189607b49bde30df3769",
+  "artifacts": []
+}
