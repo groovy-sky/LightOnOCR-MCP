@@ -1,6 +1,6 @@
 module github.com/lightonai/lightonocr-mcp
 
-go 1.25.0
+go 1.25.13
 
 require github.com/modelcontextprotocol/go-sdk v1.8.0
 

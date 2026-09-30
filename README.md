@@ -72,7 +72,9 @@ The Docker build intentionally fails when any of these files is absent. Do not
 create placeholder model files or a replacement checksum manifest.
 
 Do not publish locally built images. Production images are built and published
-only by the protected release workflow.
+only by the protected release workflow. No local `docker login`, `docker push`,
+personal registry token, or manually uploaded model artifact is part of the
+release process.
 
 ## Configuration
 
@@ -92,16 +94,36 @@ only by the protected release workflow.
 ## Release
 
 Create GitHub Environments named `release`, `staging`, and `production`.
-Require reviewers for `release` and `production`; restrict release deployment
-to version tags. Pull-request CI has only `contents: read` and cannot publish.
+Require reviewers for `release` and `production`; allow the `release`
+environment only from `main` and version tags. Pull-request CI has only
+`contents: read` and cannot publish. The model conversion job also has only
+`contents: read`; `packages: write` is scoped exclusively to the protected
+`publish` job that authenticates to GHCR with its workflow `GITHUB_TOKEN`.
 
-A signed semantic version tag is the normal release trigger:
+No model conversion, Docker build, registry login, or inference run is required
+on the operator's machine. Authenticate GitHub CLI, create a signed semantic
+version tag, and push it; the tag push starts the protected workflow exactly
+once:
 
 ```bash
+gh auth login --hostname github.com
 git tag -s v1.0.0 -m 'LightOnOCR MCP v1.0.0'
 git push origin v1.0.0
-gh workflow run release.yml --ref v1.0.0
+gh run list --workflow release.yml --limit 5
+gh run watch <run-id> --exit-status
 ```
+
+For an explicitly approved non-versioned build from `main`, dispatch the same
+workflow manually. This publishes only the immutable `sha-<git-sha>` reference:
+
+```bash
+gh workflow run release.yml --ref main
+gh run list --workflow release.yml --limit 5
+gh run watch <run-id> --exit-status
+```
+
+Do not manually dispatch a tag immediately after pushing it, because the tag
+push already starts the release workflow.
 
 The workflow downloads the immutable model revision, records and verifies the
 source manifest, converts F16 text and projector artifacts, explicitly creates
@@ -117,6 +139,13 @@ Critical fixed vulnerabilities, creates an SPDX SBOM, runs CPU health and MCP
 tool-call smoke tests for both base64 and URL images, and verifies graceful
 `SIGTERM`. Only then does it push to GHCR with GitHub's workflow-scoped token,
 attach provenance, and pass the immutable digest to protected staging.
+The conversion job reclaims unused SDKs on its ephemeral hosted runner and
+requires at least 30 GiB free before downloading the model. It uses
+`ubuntu-24.04` by default. If the standard runner is insufficient for the
+conversion or float32 reference pass, configure a GitHub larger runner and set
+the repository variable `MODEL_BUILD_RUNNER` to that runner's label. This still
+keeps conversion, image construction, testing, and GHCR publication entirely
+inside GitHub Actions.
 
 Published references are:
 

@@ -5,3 +5,8 @@
 lightonocr-mcp
 **/__pycache__
 **/*.pyc
+artifacts/*
+!artifacts/LightOnOCR-2-1B-Q8_0.gguf
+!artifacts/LightOnOCR-2-1B-mmproj-F16.gguf
+!artifacts/manifest.json
+!artifacts/manifest.sha256

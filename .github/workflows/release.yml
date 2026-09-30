@@ -11,10 +11,6 @@ concurrency:
 
 permissions:
   contents: read
-  packages: write
-  id-token: write
-  attestations: write
-  deployments: write
 
 env:
   MODEL_REPOSITORY: lightonai/LightOnOCR-2-1B
@@ -25,7 +21,7 @@ env:
 
 jobs:
   build-artifacts:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.MODEL_BUILD_RUNNER || 'ubuntu-24.04' }}
     environment: release
     timeout-minutes: 360
     steps:
@@ -37,6 +33,16 @@ jobs:
         run: |
           tag_sha=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$GITHUB_REF_NAME" --jq '.object.sha')
           gh api "repos/$GITHUB_REPOSITORY/git/tags/$tag_sha" --jq '.verification.verified' | grep -Fx true
+      - name: Prepare conversion runner
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+          docker system prune --all --force
+          available_kib=$(df --output=avail "${{ runner.temp }}" | tail -n 1)
+          required_kib=$((30 * 1024 * 1024))
+          if (( available_kib < required_kib )); then
+            echo "At least 30 GiB of free disk is required for conversion and parity; found $((available_kib / 1024 / 1024)) GiB." >&2
+            exit 1
+          fi
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version-file: go.mod
@@ -44,7 +50,6 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.12'
-          cache: pip
       - name: Validate source
         run: |
           test -z "$(gofmt -l main.go main_test.go cmd/mcp-smoke/main.go)"
@@ -55,7 +60,10 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install --yes --no-install-recommends cmake g++ fonts-dejavu-core
-          python -m pip install huggingface-hub==1.0.1 pillow==12.0.0 torch==2.9.0 transformers==5.0.0
+          PIP_NO_CACHE_DIR=1 python -m pip install \
+            --index-url https://download.pytorch.org/whl/cpu torch==2.9.0
+          PIP_NO_CACHE_DIR=1 python -m pip install \
+            huggingface-hub==1.0.1 pillow==12.0.0 transformers==5.0.0
       - name: Convert pinned official model
         env:
           WORK_DIR: ${{ runner.temp }}/conversion
@@ -67,6 +75,7 @@ jobs:
           scripts/run-transformers-reference.py \
             --model "${{ runner.temp }}/conversion/model" \
             --fixtures testdata/parity --output "${{ runner.temp }}/transformers.json"
+          rm -rf "${{ runner.temp }}/conversion/model" "$HOME/.cache/huggingface" "$HOME/.cache/pip"
       - name: Validate F16 parity
         run: |
           "${{ runner.temp }}/conversion/llama.cpp/build/bin/llama-server" \
@@ -115,6 +124,11 @@ jobs:
     runs-on: ubuntu-24.04
     environment: release
     timeout-minutes: 180
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
     outputs:
       digest: ${{ steps.push.outputs.digest }}
     steps:
@@ -205,6 +219,11 @@ jobs:
 
   deploy-staging:
     needs: publish
+    permissions:
+      contents: read
+      packages: read
+      attestations: read
+      deployments: write
     uses: ./.github/workflows/deploy.yml
     with:
       environment: staging
