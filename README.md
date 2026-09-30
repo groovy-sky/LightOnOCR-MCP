@@ -49,7 +49,7 @@ Python 3.12, `hf`, CMake, a C++ compiler, enough disk for the source and F16/Q8
 artifacts, and enough CPU/RAM for conversion and parity runs.
 
 ```bash
-python -m pip install huggingface-hub==2.0.0 pillow==12.0.0 \
+python -m pip install huggingface-hub==1.33.0 pillow==12.0.0 \
 	torch==2.9.0 transformers==5.18.0
 WORK_DIR="$PWD/.cache/conversion" ARTIFACT_DIR="$PWD/artifacts" \
 	scripts/convert-model.sh

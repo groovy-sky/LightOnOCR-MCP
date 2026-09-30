@@ -64,7 +64,7 @@ jobs:
           PIP_NO_CACHE_DIR=1 python -m pip install \
             --index-url https://download.pytorch.org/whl/cpu torch==2.9.0
           PIP_NO_CACHE_DIR=1 python -m pip install \
-            huggingface-hub==2.0.0 pillow==12.0.0 transformers==5.18.0
+            huggingface-hub==1.33.0 pillow==12.0.0 transformers==5.18.0
       - name: Convert pinned official model
         env:
           WORK_DIR: ${{ runner.temp }}/conversion
